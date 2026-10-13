@@ -1,11 +1,10 @@
-
 # AI Restaurant Assistant
 
 **An AI-powered restaurant ordering and pickup experience built with a stateful, multi-agent workflow.**
 
 The AI Restaurant Assistant is an engineering portfolio project that explores how conversational AI can be integrated into a practical restaurant workflow: browsing a menu, managing a cart, verifying inventory, placing an order with explicit customer confirmation, and retrieving an existing order using a four-digit pickup number.
 
-The application combines **LangGraph orchestration**, **LangChain-based agent/tool integration**, a **Gradio storefront**, **SQLite persistence**, and **LangSmith observability**. The full implementation is maintained separately in a private source-code repository; this public repository documents the design, behavior, and engineering decisions.
+The application combines **LangGraph orchestration**, **LangChain-based agent/tool integration**, **tool calling and graph-based routing**, **stateful memory and checkpoints**, **human-in-the-loop interrupts**, a **Gradio storefront**, **SQLite persistence**, and **LangSmith observability**. The full implementation is maintained separately in a private source-code repository; this public repository documents the design, behavior, and engineering decisions.
 
 > **Project status:** Working local prototype. The application has passed **107 automated tests** and has been exercised through the Gradio interface. This is a portfolio demonstration, not a claim of production deployment.
 
@@ -41,13 +40,78 @@ Customers can interact with the assistant in natural language or use the menu di
 4. Receive an itemized receipt and a four-digit pickup number.
 5. Return later to retrieve order details using that number.
 
-### Interface gallery
+### Application screenshots
 
-> Screenshots will be added after review and redaction. The source code and live customer/order data will not be published here.
+#### Visual storefront and AI chat
 
-| Storefront and menu | Checkout receipt | Pickup-order lookup |
-| --- | --- | --- |
-| *Screenshot coming soon* | *Screenshot coming soon* | *Screenshot coming soon* |
+![AI Restaurant Assistant storefront showing the menu, cart, and conversational interface](assets/storefront.png)
+
+*Eight-item visual menu with cart actions and a conversational ordering assistant.*
+
+#### Order review and customer approval
+
+![Cart review with explicit Confirm, Modify, and Cancel controls](assets/order-review.png)
+
+*The customer can confirm, modify, or cancel an order before inventory is deducted or an order is placed.*
+
+#### Confirmed order and pickup receipt
+
+![Confirmed order receipt with line items, total, and pickup number](assets/confirmed-order.png)
+
+*After confirmation, the customer receives an itemized order receipt and a four-digit pickup number.*
+
+#### Pickup verification and order details
+
+![Pickup lookup showing verified pickup number, order status, items, quantities, and total](assets/pickup-lookup.png)
+
+*Existing orders can be retrieved with a pickup number. Failed lookups are limited to three per conversation.*
+
+## Applied AI engineering concepts
+
+The project was developed alongside an advanced LangChain/LangGraph learning track. The table below distinguishes **features demonstrated in this application** from **related techniques studied separately**, rather than presenting every course topic as a shipped feature.
+
+| Engineering concept | Application in this project |
+| --- | --- |
+| **Multi-agent orchestration** | A LangGraph supervisor routes customer messages between restaurant conversation, ordering, and pickup responsibilities. |
+| **Graph nodes, edges, and conditional routing** | The workflow selects an appropriate path based on intent and current conversation state. |
+| **Tool calling and tool boundaries** | Agents invoke application tools for menu/cart operations, inventory checks, order placement, and pickup lookups rather than directly modifying business data. |
+| **Typed shared state** | Workflow state carries cart and checkout information, pickup-attempt counts, and conversation context between steps. |
+| **Short-term memory and checkpointing** | A LangGraph in-memory checkpointer supports continuation within a running application session; checkpoint history is **not yet durably stored across process restarts**. |
+| **Human-in-the-loop interrupts** | Checkout pauses for explicit customer approval; confirm, modify, and cancel lead to different workflow paths. |
+| **Multi-step execution and tool results** | Cart mutation, inventory validation, customer approval, and persistence are distinct operations with validation between them. |
+| **SQL-integrated agents and tools** | Business tools use SQLite transactions to persist orders and inventory; the LLM is not granted unrestricted database access. |
+| **Guardrails and scoped behavior** | Restaurant-focused intent handling redirects unrelated questions, and pickup verification enforces three failed attempts per conversation. |
+| **Observability / trace inspection** | LangSmith captures LangGraph executions for debugging tool calls, routing, latency, token usage, and estimated costs where available. |
+| **Testing and reliability** | pytest tests exercise graph behavior, confirmation branches, stock invariants, concurrency, idempotency, migration, and pickup limits. |
+
+### How a customer request travels through the system
+
+1. **Receive input:** Gradio accepts a chat message or a cart action.
+2. **Read state:** LangGraph resumes the conversation thread and evaluates the current cart, checkout phase, and pickup status.
+3. **Route intent:** The supervisor sends the request to conversation assistance, order handling, or pickup lookup.
+4. **Invoke tools:** The selected handler uses narrow, validated tools to perform relevant actions.
+5. **Pause when necessary:** Checkout requests enter a human-approval step before placing an order.
+6. **Commit deterministically:** An approved checkout uses an idempotency key and an atomic SQLite transaction.
+7. **Respond and trace:** The user sees a result while LangSmith traces the supported execution steps.
+
+### State, checkpoints, and persistence are different layers
+
+A key architectural decision is to avoid treating conversational memory and restaurant data as the same thing:
+
+- **LangGraph state:** Tracks per-conversation workflow details, such as cart progress, checkout readiness, and failed pickup attempts.
+- **In-memory checkpointing:** Supports stateful continuation and human-in-the-loop resume while the current application process is running.
+- **SQLite business persistence:** Retains orders, inventory, and pickup-number allocation independently of chat history, including across application restarts.
+- **LangSmith traces:** Record observability data for inspection and debugging; they are not the application's order database.
+
+This separation prevents a restarted chat session from becoming the source of truth for whether an order was actually placed.
+
+### Agent design: reasoning where useful, deterministic rules where necessary
+
+The LLM interprets varied customer language and decides which restaurant capability to use. But core business invariants are enforced in Python tools and database operations: valid items and quantities, sufficient inventory, explicit checkout approval, and duplicate-request handling. This reduces the risk of a plausible-sounding assistant response being mistaken for a completed transaction.
+
+### Additional learning topics informing the design
+
+The associated learning roadmap also includes **custom agents, middleware and hooks, agent skills, subagents, long-running/deep-agent patterns, streaming, structured outputs, retry/error-handling techniques, memory backends, evaluators, and SQL-agent development**. These topics informed the design exploration and future roadmap, but the public documentation does **not** claim that all of them are implemented in this restaurant prototype. For example, durable LangGraph checkpointing, a formal automated LangSmith evaluation dataset, and autonomous deep-agent research workflows are not presented as existing restaurant features.
 
 ## System architecture
 
@@ -198,6 +262,10 @@ flowchart LR
 
 **Observed during development:** A LangSmith dashboard screenshot showed **209 traces** at the time it was captured. This is a point-in-time observation, not a performance benchmark or service-level objective.
 
+![LangSmith tracing dashboard with observed LangGraph runs, latency, token counts, and cost information](assets/langsmith-tracing.png)
+
+*LangSmith tracing dashboard. Account sidebar removed for privacy; the screenshot reflects a development snapshot.*
+
 > **Privacy note:** Any publicly shared trace screenshot will be reviewed to remove personal information, API details, and potentially sensitive customer or order content.
 
 ## Reliability and testing
@@ -216,6 +284,17 @@ Areas exercised include:
 - Restaurant-focused intent routing and workflow integration
 
 The test count documents the state of the project at that point; it is not a substitute for production load, security, or deployment testing.
+
+## Technical patterns demonstrated
+
+- **Supervisor pattern:** Route intents to specialized capabilities instead of asking one open-ended chatbot to handle everything.
+- **State machine / graph workflow:** Track progression through customer requests, review, interruption, and finalization.
+- **Human-in-the-loop approval:** Require user intervention before side-effecting checkout operations.
+- **Idempotent commands:** Tie retries to stable request identifiers and return an existing order when appropriate.
+- **Atomic transactional updates:** Keep inventory deduction and order insertion consistent.
+- **Read-only queries:** Pickup retrieval displays a saved order without silently changing its status.
+- **Graceful failure paths:** Report invalid products, insufficient stock, missing pickup numbers, and closed sessions without claiming success.
+- **Tracing and troubleshooting:** Inspect LangGraph runs in LangSmith to understand routing and latency.
 
 ## Technology stack
 
@@ -251,6 +330,8 @@ The test count documents the state of the project at that point; it is not a sub
 - [ ] Refine the checkout-review wording and customer experience
 - [ ] Evaluate deployment requirements, persistent hosting, and stronger operational security
 - [ ] Expand trace-based evaluation and performance testing
+- [ ] Explore durable LangGraph checkpoint storage for cross-restart conversation history
+- [ ] Assess structured outputs, streaming UX, middleware/guardrails, and formal agent evaluations for a future release
 
 ## Source code access
 
